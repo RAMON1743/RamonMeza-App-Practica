@@ -1,0 +1,132 @@
+version: 2.1
+
+jobs:
+  build-and-test:
+    docker:
+      - image: cimg/python:3.9  # Imagen de Python para el job
+    steps:
+      - checkout  # Obtener el código fuente
+
+      # Configuración del entorno virtual y la instalación de dependencias
+      - run:
+          name: Configurar entorno y dependencias
+          command: |
+            python -m venv venv
+            . venv/bin/activate
+            pip install -r requirements.txt
+            pip install pytest redis
+            pip install pytest-cov
+            pip install --upgrade pytest pytest-cov
+            pip install black
+            pip install ggshield
+            pip install snyk
+
+      # Ejecutar linting (usando Black)
+      - run:
+          name: Ejecutar linting
+          command: |
+            . venv/bin/activate
+            black --check .
+
+      # Ejecutar análisis estático de código (usando GitGuardian)
+      - run:
+          name: Análisis estático con GitGuardian
+          command: |
+            . venv/bin/activate
+            ggshield secret scan
+
+      # Ejecutar análisis de vulnerabilidades (usando Snyk)
+      - run:
+          name: Análisis de vulnerabilidades con Snyk
+          command: |
+            . venv/bin/activate
+            snyk test
+
+      # Ejecutar pruebas
+      - run:
+          name: Ejecutar pruebas
+          command: |
+            . venv/bin/activate
+            pytest tests/ --junitxml=test-results/junit.xml --cov=. --cov-report=html:test-results/coverage-html
+
+      # Guardar artefactos de los tests
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: test-results
+          destination: test-reports
+
+  deploy:
+    docker:
+      - image: cimg/python:3.9
+    steps:
+      - checkout  # Obtener el código fuente
+      - run:
+          name: Construir imagen Docker
+          command: |
+            docker build -t $DOCKERHUB_USER/$IMAGE_NAME:$CIRCLE_SHA1 .
+
+      # Login en Docker Hub
+      - run:
+          name: Login a Docker Hub
+          command: |
+            echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin
+
+      # Push de la imagen a Docker Hub
+      - run:
+          name: Push imagen a Docker Hub
+          command: |
+            docker push $DOCKERHUB_USER/$IMAGE_NAME:$CIRCLE_SHA1
+
+  deploy-k8s:
+    docker:
+      - image: cimg/python:3.9
+    steps:
+      - checkout  # Obtener el código fuente
+
+      # Clonar el repositorio de manifiestos de Kubernetes (usando SSH)
+      - run:
+          name: Clonar repositorio de manifiestos usando SSH
+          command: |
+            git clone git@github.com:RAMON1743/RamonMeza-App-Practica.git manifests
+
+      # Actualizar la imagen en los manifiestos de Kubernetes
+      - run:
+          name: Actualizar manifiestos de Kubernetes con la nueva imagen
+          command: |
+            cd manifests
+            NEW_IMAGE="$DOCKERHUB_USER/$IMAGE_NAME:$CIRCLE_SHA1"
+            echo "Nueva imagen: $NEW_IMAGE"
+            
+            # Reemplazar la imagen en deployment.yaml
+            sed -i "s|image: .*|image: $NEW_IMAGE|g" deployment.yaml
+            
+            # Verificar que la imagen se haya actualizado
+            echo "Imagen actualizada:"
+            grep -n "image: $NEW_IMAGE" deployment.yaml
+
+      # Desplegar en Kubernetes usando kubectl
+      - run:
+          name: Desplegar en Kubernetes usando kubectl
+          command: |
+            kubectl apply -f manifests/deployment.yaml
+
+workflows:
+  
+  build-test-deploy:
+    jobs:
+      - build-and-test
+      - deploy:
+          requires:
+            - build-and-test
+          filters:
+            branches:
+              only:
+                - main
+      - deploy-k8s:
+          requires:
+            - deploy
+          filters:
+            branches:
+              only:
+                - main
