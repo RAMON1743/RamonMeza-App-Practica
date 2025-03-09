@@ -1,5 +1,4 @@
 flask==2.0.2
 pytest==6.2.4
 black==21.9b0
-snyk==1.594.0
-ggshield==1.0.0
+snyk==1.593.0  # Asegúrate de que esta versión sea válida
